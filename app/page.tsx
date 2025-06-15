@@ -1,11 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { useRealtimeWebRTC } from '@/hooks/useRealtimeWebRTC';
+import { useRealtimeDirectAPI } from '@/hooks/useRealtimeDirectAPI';
 import { roleplayScenarios, ScenarioKey } from '@/lib/agents/roleplayAgent';
+import { DebugPanel } from '@/components/DebugPanel';
+import { AudioDebug } from '@/components/AudioDebug';
 
 export default function Home() {
-  const { state, connect, disconnect, toggleMute } = useRealtimeWebRTC();
+  const { state, connect, disconnect, toggleMute } = useRealtimeDirectAPI();
   const [selectedScenario, setSelectedScenario] = useState<ScenarioKey | null>(null);
 
   const handleScenarioSelect = (scenario: ScenarioKey) => {
@@ -108,6 +110,14 @@ export default function Home() {
           <p className="font-bold">エラー</p>
           <p>{state.error}</p>
         </div>
+      )}
+      
+      {/* Debug panel for development */}
+      {process.env.NODE_ENV === 'development' && (
+        <>
+          <DebugPanel />
+          <AudioDebug />
+        </>
       )}
     </main>
   );

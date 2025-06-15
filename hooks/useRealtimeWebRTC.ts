@@ -30,23 +30,52 @@ export function useRealtimeWebRTC() {
   const streamRef = useRef<MediaStream | null>(null);
 
   const connect = useCallback(async (scenario: ScenarioKey) => {
+    console.log('🔵 Starting connection for scenario:', scenario);
     setState(prev => ({ ...prev, isConnecting: true, error: null, scenario }));
 
     try {
       // Get ephemeral key from server
+      console.log('📡 Fetching ephemeral key from /api/session...');
       const tokenResponse = await fetch('/api/session');
+      console.log('📡 Token response status:', tokenResponse.status);
+      
       if (!tokenResponse.ok) {
+        const errorText = await tokenResponse.text();
+        console.error('❌ Token fetch failed:', errorText);
         throw new Error('Failed to get session token');
       }
       
       const sessionData = await tokenResponse.json();
-      const ephemeralKey = sessionData.client_secret.value;
+      console.log('📦 Session data received:', {
+        hasClientSecret: !!sessionData.client_secret,
+        clientSecretType: typeof sessionData.client_secret,
+        hasValue: !!sessionData.client_secret?.value,
+        model: sessionData.model,
+        fullData: JSON.stringify(sessionData, null, 2)
+      });
+      
+      const ephemeralKey = sessionData.client_secret?.value || sessionData.client_secret;
       const model = sessionData.model || 'gpt-4o-realtime-preview-2025-06-03';
       
-      console.log('Got ephemeral key:', ephemeralKey.substring(0, 10) + '...');
-      console.log('Using model:', model);
+      console.log('🔑 Ephemeral key:', ephemeralKey ? ephemeralKey.substring(0, 20) + '...' : 'NO KEY FOUND');
+      console.log('🤖 Using model:', model);
+      
+      // Debug: Check token expiration
+      const currentTime = Date.now() / 1000;
+      const expiresAt = sessionData.client_secret?.expires_at;
+      console.log('⏰ Current time (Unix):', currentTime);
+      console.log('⏳ Token expires at:', expiresAt);
+      console.log('📅 Current time:', new Date().toISOString());
+      console.log('📅 Expires at:', new Date(expiresAt * 1000).toISOString());
+      console.log('⚠️ Time difference:', expiresAt - currentTime, 'seconds');
+      
+      if (expiresAt && currentTime >= expiresAt) {
+        console.error('❌ Token has already expired!');
+        console.error('❌ System time might be incorrect');
+      }
 
       // Get user media
+      console.log('🎤 Requesting microphone access...');
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
@@ -55,12 +84,27 @@ export function useRealtimeWebRTC() {
         } 
       });
       streamRef.current = stream;
+      console.log('✅ Microphone access granted, tracks:', stream.getTracks().map(t => t.kind));
 
       // Create peer connection
+      console.log('🔗 Creating RTCPeerConnection...');
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
       pcRef.current = pc;
+      
+      // Log connection state changes
+      pc.onconnectionstatechange = () => {
+        console.log('📶 Connection state:', pc.connectionState);
+      };
+      
+      pc.oniceconnectionstatechange = () => {
+        console.log('🧊 ICE connection state:', pc.iceConnectionState);
+      };
+      
+      pc.onicegatheringstatechange = () => {
+        console.log('🧊 ICE gathering state:', pc.iceGatheringState);
+      };
 
       // Add audio track
       stream.getTracks().forEach(track => {
@@ -88,7 +132,10 @@ export function useRealtimeWebRTC() {
       let isConnected = false;
 
       dc.onopen = () => {
-        console.log('DataChannel opened');
+        console.log('🚀 DataChannel opened!');
+        console.log('📊 DataChannel state:', dc.readyState);
+        console.log('🏷️ DataChannel label:', dc.label);
+        
         isConnected = true;
         setState(prev => ({ 
           ...prev, 
@@ -113,8 +160,10 @@ export function useRealtimeWebRTC() {
             }
           }
         };
+        
+        console.log('📤 Sending session update:', JSON.stringify(sessionUpdate, null, 2));
         dc.send(JSON.stringify(sessionUpdate));
-        console.log('Sent session update');
+        console.log('✅ Session update sent');
       };
 
       dc.onmessage = (event) => {
@@ -194,16 +243,20 @@ export function useRealtimeWebRTC() {
       };
 
       // Create offer
+      console.log('📤 Creating WebRTC offer...');
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      console.log('📋 Offer created, SDP length:', offer.sdp?.length);
 
       // 正しいWebRTCエンドポイントを使用
       const baseUrl = 'https://api.openai.com/v1/realtime';
       const url = `${baseUrl}?model=${model}`;
       
-      console.log('Connecting to:', url);
+      console.log('🌐 WebRTC endpoint:', url);
+      console.log('🔐 Authorization header:', `Bearer ${ephemeralKey ? ephemeralKey.substring(0, 20) + '...' : 'NO KEY'}`);
 
       // Send offer to OpenAI
+      console.log('📮 Sending SDP offer to OpenAI...');
       const sdpResponse = await fetch(url, {
         method: 'POST',
         headers: {
@@ -212,28 +265,52 @@ export function useRealtimeWebRTC() {
         },
         body: offer.sdp,
       });
+      
+      console.log('📨 SDP response status:', sdpResponse.status);
+      console.log('📨 SDP response headers:', Object.fromEntries(sdpResponse.headers.entries()));
 
       if (!sdpResponse.ok) {
         const errorText = await sdpResponse.text();
-        console.error('SDP response error:', sdpResponse.status, errorText);
-        throw new Error(`Failed to establish WebRTC connection: ${sdpResponse.status}`);
+        console.error('❌ SDP response error:', {
+          status: sdpResponse.status,
+          statusText: sdpResponse.statusText,
+          error: errorText,
+          url: url,
+          keyUsed: ephemeralKey ? ephemeralKey.substring(0, 20) + '...' : 'NO KEY'
+        });
+        
+        // Parse error if JSON
+        try {
+          const errorJson = JSON.parse(errorText);
+          console.error('❌ Parsed error:', errorJson);
+        } catch (e) {
+          // Not JSON, ignore
+        }
+        
+        throw new Error(`Failed to establish WebRTC connection: ${sdpResponse.status} - ${errorText}`);
       }
 
       const answerSdp = await sdpResponse.text();
+      console.log('📥 Received SDP answer, length:', answerSdp.length);
+      
       const answer = {
         type: 'answer' as RTCSdpType,
         sdp: answerSdp,
       };
 
+      console.log('🔄 Setting remote description...');
       await pc.setRemoteDescription(answer);
-      console.log('WebRTC connection established');
+      console.log('✅ WebRTC connection established successfully!');
 
     } catch (error) {
-      console.error('Connection error:', error);
+      console.error('❌ Connection error:', error);
+      console.error('❌ Error stack:', error instanceof Error ? error.stack : 'No stack');
+      
+      const errorMessage = error instanceof Error ? error.message : 'Failed to connect';
       setState(prev => ({ 
         ...prev, 
         isConnecting: false, 
-        error: error instanceof Error ? error.message : 'Failed to connect' 
+        error: errorMessage 
       }));
       
       // Cleanup on error
