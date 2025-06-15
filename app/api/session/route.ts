@@ -11,6 +11,8 @@ export async function GET() {
       );
     }
 
+    console.log('Creating ephemeral key with API key:', apiKey.substring(0, 10) + '...');
+    
     const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
       method: 'POST',
       headers: {
@@ -25,15 +27,24 @@ export async function GET() {
 
     if (!response.ok) {
       const error = await response.text();
-      console.error('OpenAI API error:', error);
+      console.error('OpenAI API error:', response.status, error);
+      console.error('Request URL:', 'https://api.openai.com/v1/realtime/sessions');
+      console.error('Request headers:', {
+        'Authorization': `Bearer ${apiKey.substring(0, 10)}...`,
+        'Content-Type': 'application/json',
+      });
       return NextResponse.json(
-        { error: 'Failed to create session' },
+        { error: 'Failed to create session', details: error },
         { status: response.status }
       );
     }
 
     const data = await response.json();
     console.log('Session response:', JSON.stringify(data, null, 2));
+    
+    // デバッグ用：client_secretの構造を確認
+    console.log('client_secret type:', typeof data.client_secret);
+    console.log('client_secret value:', data.client_secret?.value ? 'has value' : 'no value');
     
     // Return the entire client_secret object (includes value and expires_at)
     return NextResponse.json({

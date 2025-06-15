@@ -31,69 +31,96 @@ export function useRealtimeSession() {
     setState(prev => ({ ...prev, isConnecting: true, error: null, scenario }));
 
     try {
-      // Get ephemeral key from server
+      // エフェメラルキーを取得
       const response = await fetch('/api/session');
       if (!response.ok) {
-        throw new Error('Failed to get session token');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to get session token');
       }
       
       const data = await response.json();
-      const { client_secret } = data;
+      console.log('Ephemeral key response:', data);
       
-      // Create agent
+      // エージェントを作成
       const agent = createRoleplayAgent(scenario);
       
-      // Create RealtimeSession (automatically uses WebRTC in browser)
+      // RealtimeSessionを作成（SDKが自動的にWebRTCを選択）
       const session = new RealtimeSession(agent, {
         model: 'gpt-4o-realtime-preview-2025-06-03',
-        input_audio_transcription: {
-          model: 'whisper-1'
-        }
+        voice: 'alloy',
       } as any);
       
-      // Set up event listeners
+      // 接続状態のリスナー
+      (session as any).on('connected', () => {
+        console.log('Session connected');
+        setState(prev => ({ 
+          ...prev, 
+          isConnecting: false, 
+          isConnected: true 
+        }));
+      });
+
+      (session as any).on('disconnected', () => {
+        console.log('Session disconnected');
+        setState(prev => ({ 
+          ...prev, 
+          isConnected: false 
+        }));
+      });
+
+      // エラーハンドリング
       session.on('error', (error: any) => {
         console.error('Session error:', error);
         setState(prev => ({ 
           ...prev, 
-          error: error.message || 'Unknown error occurred' 
+          error: error.message || 'Unknown error occurred',
+          isConnecting: false,
         }));
       });
 
-      (session as any).on('conversation.item.completed', (event: any) => {
-        if (event.item.type === 'message') {
-          const content = event.item.formatted?.text || event.item.content?.[0]?.text || '';
+      // 会話の追跡
+      (session as any).on('conversation.updated', (event: any) => {
+        const { item } = event;
+        if (item && item.type === 'message') {
+          const content = item.content?.[0]?.text || '';
+          if (content) {
+            setState(prev => ({
+              ...prev,
+              history: [...prev.history, {
+                role: item.role,
+                content,
+                timestamp: new Date(),
+              }],
+            }));
+          }
+        }
+      });
+
+      // 音声入力の文字起こし
+      (session as any).on('input_audio_transcription.completed', (event: any) => {
+        if (event.transcript) {
           setState(prev => ({
             ...prev,
             history: [...prev.history, {
-              role: event.item.role,
-              content,
+              role: 'user',
+              content: event.transcript,
               timestamp: new Date(),
             }],
           }));
         }
       });
 
-      (session as any).on('input_audio_buffer.speech_started', () => {
-        // User started speaking
-      });
-
-      (session as any).on('input_audio_buffer.speech_stopped', () => {
-        // User stopped speaking
-      });
-
-      // Connect using ephemeral key
+      // エフェメラルキーで接続
+      // client_secretオブジェクトから値を正しく取得
+      const apiKey = data.client_secret?.value || data.client_secret;
+      
+      console.log('Connecting with key:', apiKey ? apiKey.substring(0, 10) + '...' : 'No key found');
+      
       await session.connect({ 
-        apiKey: client_secret.value
+        apiKey: apiKey
       });
 
       sessionRef.current = session;
-      
-      setState(prev => ({ 
-        ...prev, 
-        isConnecting: false, 
-        isConnected: true 
-      }));
       
     } catch (error) {
       console.error('Connection error:', error);
@@ -122,16 +149,19 @@ export function useRealtimeSession() {
     if (sessionRef.current) {
       setState(prev => {
         const newMuted = !prev.isMuted;
-        // Interrupt if currently speaking when muting
-        if (newMuted && sessionRef.current) {
-          (sessionRef.current as any).interrupt();
+        // SDKのミュート機能を使用
+        if (sessionRef.current) {
+          // interruptメソッドで音声を中断
+          if (newMuted) {
+            (sessionRef.current as any).interrupt();
+          }
         }
         return { ...prev, isMuted: newMuted };
       });
     }
   }, []);
 
-  // Cleanup on unmount
+  // クリーンアップ
   useEffect(() => {
     return () => {
       if (sessionRef.current) {
