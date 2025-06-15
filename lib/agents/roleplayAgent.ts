@@ -41,10 +41,10 @@ export const roleplayScenarios = {
 export type ScenarioKey = keyof typeof roleplayScenarios;
 
 export function createRoleplayAgent(scenario: ScenarioKey): RealtimeAgent {
-  const { instructions } = roleplayScenarios[scenario];
+  const { name, instructions } = roleplayScenarios[scenario];
   
   return new RealtimeAgent({
-    name: `Japanese Roleplay - ${roleplayScenarios[scenario].name}`,
+    name: `${name}トレーナー`,
     instructions,
   });
 }

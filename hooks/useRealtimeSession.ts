@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { RealtimeSession, OpenAIRealtimeWebRTC } from '@openai/agents-realtime';
+import { RealtimeSession } from '@openai/agents-realtime';
 import { createRoleplayAgent, ScenarioKey } from '@/lib/agents/roleplayAgent';
 
 export interface SessionState {
@@ -38,68 +38,20 @@ export function useRealtimeSession() {
       }
       
       const data = await response.json();
-      console.log('Client data:', data);
       const { client_secret } = data;
       
-      // Create agent and session with WebRTC transport
+      // Create agent
       const agent = createRoleplayAgent(scenario);
       
-      // Get audio permissions and create transport
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const audioElement = document.createElement('audio');
-      audioElement.autoplay = true;
-      
-      const transport = new OpenAIRealtimeWebRTC({
-        mediaStream,
-        audioElement,
-        model: 'gpt-4o-realtime-preview-2025-06-03'
-      });
-      
-      const session = new RealtimeSession(agent, { 
-        transport
-      });
+      // Create RealtimeSession (automatically uses WebRTC in browser)
+      const session = new RealtimeSession(agent, {
+        model: 'gpt-4o-realtime-preview-2025-06-03',
+        input_audio_transcription: {
+          model: 'whisper-1'
+        }
+      } as any);
       
       // Set up event listeners
-      session.on('connection.state.changed', (event: any) => {
-        if (event.type === 'connected') {
-          setState(prev => ({ 
-            ...prev, 
-            isConnecting: false, 
-            isConnected: true 
-          }));
-        } else if (event.type === 'disconnected') {
-          setState(prev => ({ 
-            ...prev, 
-            isConnected: false 
-          }));
-        }
-      });
-
-      session.on('input_audio_transcription.completed', (event: any) => {
-        setState(prev => ({
-          ...prev,
-          history: [...prev.history, {
-            role: 'user',
-            content: event.transcript,
-            timestamp: new Date(),
-          }],
-        }));
-      });
-
-      session.on('response.output_item.completed', (event: any) => {
-        if (event.item.type === 'message' && event.item.role === 'assistant') {
-          const content = event.item.content?.[0]?.text || '';
-          setState(prev => ({
-            ...prev,
-            history: [...prev.history, {
-              role: 'assistant',
-              content,
-              timestamp: new Date(),
-            }],
-          }));
-        }
-      });
-
       session.on('error', (error: any) => {
         console.error('Session error:', error);
         setState(prev => ({ 
@@ -108,18 +60,40 @@ export function useRealtimeSession() {
         }));
       });
 
-      // Connect to session - use client_secret.value if it's an object
-      const apiKey = typeof client_secret === 'object' ? client_secret.value : client_secret;
-      console.log('Connecting with apiKey:', apiKey);
-      
-      await session.connect({ 
-        apiKey: apiKey
+      (session as any).on('conversation.item.completed', (event: any) => {
+        if (event.item.type === 'message') {
+          const content = event.item.formatted?.text || event.item.content?.[0]?.text || '';
+          setState(prev => ({
+            ...prev,
+            history: [...prev.history, {
+              role: event.item.role,
+              content,
+              timestamp: new Date(),
+            }],
+          }));
+        }
       });
-      
-      // Session is already configured via constructor options
-      // Additional configuration can be done via transport if needed
+
+      (session as any).on('input_audio_buffer.speech_started', () => {
+        // User started speaking
+      });
+
+      (session as any).on('input_audio_buffer.speech_stopped', () => {
+        // User stopped speaking
+      });
+
+      // Connect using ephemeral key
+      await session.connect({ 
+        apiKey: client_secret.value
+      });
 
       sessionRef.current = session;
+      
+      setState(prev => ({ 
+        ...prev, 
+        isConnecting: false, 
+        isConnected: true 
+      }));
       
     } catch (error) {
       console.error('Connection error:', error);
@@ -133,7 +107,7 @@ export function useRealtimeSession() {
 
   const disconnect = useCallback(() => {
     if (sessionRef.current) {
-      sessionRef.current.disconnect();
+      (sessionRef.current as any).disconnect();
       sessionRef.current = null;
     }
     setState(prev => ({ 
@@ -148,11 +122,9 @@ export function useRealtimeSession() {
     if (sessionRef.current) {
       setState(prev => {
         const newMuted = !prev.isMuted;
-        // Toggle microphone mute state via transport
-        if (newMuted && sessionRef.current?.transport) {
-          sessionRef.current.transport.sendEvent({
-            type: 'input_audio_buffer.clear',
-          });
+        // Interrupt if currently speaking when muting
+        if (newMuted && sessionRef.current) {
+          (sessionRef.current as any).interrupt();
         }
         return { ...prev, isMuted: newMuted };
       });
@@ -163,7 +135,7 @@ export function useRealtimeSession() {
   useEffect(() => {
     return () => {
       if (sessionRef.current) {
-        sessionRef.current.disconnect();
+        (sessionRef.current as any).disconnect();
       }
     };
   }, []);
