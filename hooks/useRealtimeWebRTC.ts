@@ -39,9 +39,12 @@ export function useRealtimeWebRTC() {
         throw new Error('Failed to get session token');
       }
       
-      const data = await tokenResponse.json();
-      const ephemeralKey = data.client_secret.value;
+      const sessionData = await tokenResponse.json();
+      const ephemeralKey = sessionData.client_secret.value;
+      const model = sessionData.model || 'gpt-4o-realtime-preview-2025-06-03';
+      
       console.log('Got ephemeral key:', ephemeralKey.substring(0, 10) + '...');
+      console.log('Using model:', model);
 
       // Get user media
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -67,6 +70,7 @@ export function useRealtimeWebRTC() {
       // Create audio element for playback
       const audio = document.createElement('audio');
       audio.autoplay = true;
+      document.body.appendChild(audio); // 重要: DOMに追加
       audioRef.current = audio;
 
       // Handle incoming audio
@@ -75,12 +79,17 @@ export function useRealtimeWebRTC() {
         audio.srcObject = event.streams[0];
       };
 
-      // Create data channel
-      const dc = pc.createDataChannel('oai-events', { ordered: true });
+      // Create data channel - 名前は正確に 'oai-events' である必要があります
+      const dc = pc.createDataChannel('oai-events', { 
+        ordered: true 
+      });
       dcRef.current = dc;
+
+      let isConnected = false;
 
       dc.onopen = () => {
         console.log('DataChannel opened');
+        isConnected = true;
         setState(prev => ({ 
           ...prev, 
           isConnecting: false, 
@@ -88,7 +97,7 @@ export function useRealtimeWebRTC() {
         }));
 
         // Send session configuration
-        const sessionConfig = {
+        const sessionUpdate = {
           type: 'session.update',
           session: {
             instructions: roleplayScenarios[scenario].instructions,
@@ -104,48 +113,66 @@ export function useRealtimeWebRTC() {
             }
           }
         };
-        dc.send(JSON.stringify(sessionConfig));
+        dc.send(JSON.stringify(sessionUpdate));
+        console.log('Sent session update');
       };
 
       dc.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          console.log('Received message:', message.type);
+          console.log('Received:', message.type);
 
-          // Handle different message types
-          if (message.type === 'conversation.item.completed') {
-            const { item } = message;
-            if (item && item.type === 'message') {
-              const content = item.content?.[0]?.text || '';
-              if (content) {
+          switch (message.type) {
+            case 'session.created':
+              console.log('Session created successfully');
+              break;
+              
+            case 'session.updated':
+              console.log('Session updated successfully');
+              break;
+
+            case 'conversation.item.created':
+              if (message.item && message.item.type === 'message') {
+                const content = message.item.content?.[0]?.text || 
+                               message.item.content?.[0]?.transcript || '';
+                if (content && message.item.role) {
+                  setState(prev => ({
+                    ...prev,
+                    history: [...prev.history, {
+                      role: message.item.role,
+                      content,
+                      timestamp: new Date(),
+                    }],
+                  }));
+                }
+              }
+              break;
+
+            case 'response.audio_transcript.delta':
+              // 音声の文字起こしのデルタ更新
+              break;
+
+            case 'response.audio_transcript.done':
+              // 音声の文字起こし完了
+              if (message.transcript) {
                 setState(prev => ({
                   ...prev,
                   history: [...prev.history, {
-                    role: item.role,
-                    content,
+                    role: 'assistant',
+                    content: message.transcript,
                     timestamp: new Date(),
                   }],
                 }));
               }
-            }
-          } else if (message.type === 'input_audio_transcription.completed') {
-            const { transcript } = message;
-            if (transcript) {
-              setState(prev => ({
-                ...prev,
-                history: [...prev.history, {
-                  role: 'user',
-                  content: transcript,
-                  timestamp: new Date(),
-                }],
+              break;
+
+            case 'error':
+              console.error('Server error:', message.error);
+              setState(prev => ({ 
+                ...prev, 
+                error: message.error?.message || 'Server error' 
               }));
-            }
-          } else if (message.type === 'error') {
-            console.error('Server error:', message.error);
-            setState(prev => ({ 
-              ...prev, 
-              error: message.error?.message || 'Server error' 
-            }));
+              break;
           }
         } catch (error) {
           console.error('Failed to parse message:', error);
@@ -154,18 +181,30 @@ export function useRealtimeWebRTC() {
 
       dc.onerror = (error) => {
         console.error('DataChannel error:', error);
-        setState(prev => ({ 
-          ...prev, 
-          error: 'Connection error' 
-        }));
+      };
+
+      dc.onclose = () => {
+        console.log('DataChannel closed');
+        if (isConnected) {
+          setState(prev => ({ 
+            ...prev, 
+            isConnected: false 
+          }));
+        }
       };
 
       // Create offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
+      // 正しいWebRTCエンドポイントを使用
+      const baseUrl = 'https://api.openai.com/v1/realtime';
+      const url = `${baseUrl}?model=${model}`;
+      
+      console.log('Connecting to:', url);
+
       // Send offer to OpenAI
-      const sdpResponse = await fetch('https://api.openai.com/v1/realtime', {
+      const sdpResponse = await fetch(url, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${ephemeralKey}`,
@@ -180,9 +219,10 @@ export function useRealtimeWebRTC() {
         throw new Error(`Failed to establish WebRTC connection: ${sdpResponse.status}`);
       }
 
+      const answerSdp = await sdpResponse.text();
       const answer = {
         type: 'answer' as RTCSdpType,
-        sdp: await sdpResponse.text(),
+        sdp: answerSdp,
       };
 
       await pc.setRemoteDescription(answer);
@@ -204,6 +244,10 @@ export function useRealtimeWebRTC() {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
+      }
+      if (audioRef.current) {
+        audioRef.current.remove();
+        audioRef.current = null;
       }
     }
   }, []);
@@ -230,6 +274,7 @@ export function useRealtimeWebRTC() {
     // Remove audio element
     if (audioRef.current) {
       audioRef.current.srcObject = null;
+      audioRef.current.remove();
       audioRef.current = null;
     }
 
@@ -249,7 +294,7 @@ export function useRealtimeWebRTC() {
         audioTrack.enabled = !newMuted;
         setState(prev => ({ ...prev, isMuted: newMuted }));
 
-        // Send interrupt if muting while speaking
+        // Send interrupt if muting
         if (newMuted && dcRef.current && dcRef.current.readyState === 'open') {
           dcRef.current.send(JSON.stringify({
             type: 'input_audio_buffer.clear'
