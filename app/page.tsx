@@ -1,11 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { useRealtimeSession } from '@/hooks/useRealtimeSession';
+import { useRealtimeWebRTC } from '@/hooks/useRealtimeWebRTC';
 import { roleplayScenarios, ScenarioKey } from '@/lib/agents/roleplayAgent';
 
 export default function Home() {
-  const { state, connect, disconnect, toggleMute } = useRealtimeSession();
+  const { state, connect, disconnect, toggleMute } = useRealtimeWebRTC();
   const [selectedScenario, setSelectedScenario] = useState<ScenarioKey | null>(null);
 
   const handleScenarioSelect = (scenario: ScenarioKey) => {

@@ -46,10 +46,8 @@ export async function GET() {
     console.log('client_secret type:', typeof data.client_secret);
     console.log('client_secret value:', data.client_secret?.value ? 'has value' : 'no value');
     
-    // Return the entire client_secret object (includes value and expires_at)
-    return NextResponse.json({
-      client_secret: data.client_secret,
-    });
+    // Return the data as received from OpenAI
+    return NextResponse.json(data);
   } catch (error) {
     console.error('Session creation error:', error);
     return NextResponse.json(
